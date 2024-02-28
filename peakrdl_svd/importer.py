@@ -1,5 +1,6 @@
 from typing import Optional, List, Dict, Any, Type, Union, Set
 import re
+import copy
 
 from xml.etree import ElementTree
 
@@ -17,6 +18,9 @@ VALID_NS_REGEXES = [
 ]
 
 class SVDImporter(RDLImporter):
+
+    base_peripherals = {}
+    base_registers = {}
 
     def __init__(self, compiler: RDLCompiler):
         """
@@ -60,14 +64,42 @@ class SVDImporter(RDLImporter):
 
         comp_name = self.get_sanitized_element_name(device)
         root_def = self.create_addrmap_definition(comp_name)
+        processed_peripherals = set()
+        derived_peripherals = []
+
         for peripheral in peripherals:
-            # self.import_memoryMap(memoryMap, comp_name, remap_state)
-            regfile = self.import_peripheral(peripheral, comp_name)
+            peripheral_name = self.get_sanitized_element_name(peripheral)
+            regfile = None
+            if "derivedFrom" in peripheral.attrib:
+                base_name = peripheral.attrib['derivedFrom']
+                self.msg.info(f"Peripheral {peripheral_name} is derived from {base_name}")
+                if base_name not in processed_peripherals:
+                    print(f"Deferring processing of this peripheral")
+                    derived_peripherals.add(peripheral_name)
+                    continue
+                regfile = self.import_peripheral(peripheral, base_name)
+            else:
+                regfile = self.import_peripheral(peripheral)
             if regfile is None:
                 continue
+            processed_peripherals.add(peripheral_name)
             self.add_child(root_def, regfile)
             # import sys
             # sys.exit(1)
+
+        for derived_peripheral in derived_peripherals:
+            for peripheral in peripherals:
+                peripheral_name = self.get_sanitized_element_name(peripheral)
+                if peripheral_name != derived_peripheral:
+                    continue
+                base_name = peripheral.attrib['derivedFrom']
+                if base_name not in processed_peripherals:
+                    self.msg.fatal(f"Peripheral {derived_peripheral} is derived from {base_name}, which doesn't exist", self.src_ref)
+                regfile = self.import_peripheral(peripheral, base_name)
+                if regfile is not None:
+                    processed_peripherals.add(peripheral_name)
+                    self.add_child(root_def, regfile)
+                break
 
         self.register_root_component(root_def)
         
@@ -130,7 +162,7 @@ class SVDImporter(RDLImporter):
             return registers[0]
 
 
-    def import_peripheral(self, peripheral: ElementTree.Element, component_name: str) -> None:
+    def import_peripheral(self, peripheral: ElementTree.Element, base_name: Optional[str] = None) -> Optional[comp.Addrmap]:
         # Schema:
         #     {nameGroup}
         #         name (required) --> inst_name
@@ -146,16 +178,16 @@ class SVDImporter(RDLImporter):
 
         d = self.flatten_element_values(peripheral)
 
-
         # Check for required values
         name = self.get_sanitized_element_name(peripheral)
         if not name:
             self.msg.fatal("peripheral is missing required tag 'name'", self.src_ref)
 
-        # Add component prefix to name
-        # name = "%s__%s" % (component_name, name)
+        if base_name is not None:
+            d = {**self.base_peripherals[base_name], **d }
 
-        # Create named component definition
+        self.base_peripherals[name] = d
+
         C_def = self.create_addrmap_definition(name)
 
         # Collect properties and other values
@@ -168,28 +200,28 @@ class SVDImporter(RDLImporter):
         if 'isPresent' in d:
             self.assign_property(C_def, "ispresent", d['isPresent'])
 
-        # aub = peripheral.find("addressUnitBits")
-        # if aub is not None:
-        #     self._addressUnitBits = self.parse_integer(get_text(aub))
-
-        #     if (self._addressUnitBits < 8) or (self._addressUnitBits % 8 != 0):
-        #         self.msg.fatal(
-        #             "Importer only supports <addressUnitBits> that is a multiple of 8",
-        #             self.src_ref
-        #         )
-        # else:
-        #     self._addressUnitBits = 8
         self._addressUnitBits = 8 # TODO: Get this from the <addressUnitBits> in <device> tag
 
-
-        # collect children
-        self.remap_states_seen = set()
-        registers = self.get_all_registers(peripheral)
-        if registers is not None:
+        def process_registers(registers):
+            seen_addresses = {}
             for register in registers:
                 child = self.parse_register(register)
                 if child:
-                    self.add_child(C_def, child)
+                    if child.addr_offset in seen_addresses:
+                        self.msg.warning(f"Register {child.inst_name} at address 0x{hex(child.addr_offset)} overlaps with {seen_addresses[child.addr_offset]}", self.src_ref)
+                    else:
+                        self.add_child(C_def, child)
+                        seen_addresses[child.addr_offset] = child.inst_name
+
+        # collect children
+        if base_name is not None and base_name in self.base_registers:
+            process_registers(self.base_registers[base_name])
+        registers = self.get_all_registers(peripheral)
+        if name in self.base_registers and registers is not None:
+            self.msg.error(f"Both registers and base registers exist", self.src_ref)
+        if registers is not None:
+            self.base_registers[name] = registers
+            process_registers(registers)
 
         if not C_def.children:
             # memoryMap contains no addressBlocks. Skip
@@ -198,14 +230,6 @@ class SVDImporter(RDLImporter):
                 % name,
                 self.src_ref
             )
-
-            if self.remap_states_seen:
-                self.msg.warning(
-                    "memoryMap '%s' contains the following possible memory remap states: \n\t%s\n"
-                    "Try selecting a remap state, as it may uncover state-specific address regions."
-                    % (name, "\n\t".join(self.remap_states_seen)),
-                    self.src_ref
-                )
             return None
         return self.instantiate_addrmap(C_def, name, d['baseAddress'])
         # return C_def

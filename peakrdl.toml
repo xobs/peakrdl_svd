@@ -1,0 +1,2 @@
+[peakrdl]
+plugins.importers.peakrdl_svd = "peakrdl_svd:Importer"

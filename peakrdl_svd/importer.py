@@ -13,9 +13,7 @@ from . import typemaps
 
 # Expected IP-XACT namespaces. This parser is not strict about the exact version.
 VALID_NS_REGEXES = [
-    re.compile(r"\{http[s]?:\/\/www\.spiritconsortium\.org\/XMLSchema\/SPIRIT", re.IGNORECASE),
-    re.compile(r"\{http[s]?:\/\/www\.accellera\.org/XMLSchema/spirit\/1685-2009", re.IGNORECASE),
-    re.compile(r"\{http[s]?:\/\/www\.accellera\.org\/XMLSchema\/IPXACT", re.IGNORECASE),
+    re.compile(r"CMSIS-SVD_Schema_1_1.xsd", re.IGNORECASE),
 ]
 
 class SVDImporter(RDLImporter):
@@ -39,17 +37,14 @@ class SVDImporter(RDLImporter):
         return self.default_src_ref
 
 
-    def import_file(self, path: str, remap_state: Optional[str] = None) -> None:
+    def import_file(self, path: str) -> None:
         """
-        Import a single SPIRIT or IP-XACT file into the SystemRDL namespace.
+        Import a single SVD file into the SystemRDL namespace.
 
         Parameters
         ----------
         path:
-            Input SPIRIT or IP-XACT XML file.
-        remap_state:
-            Optional remapState string that is used to select memoryRemap regions
-            that are tagged under a specific remap state.
+            Input SVD XML file.
         """
         super().import_file(path)
 
@@ -58,52 +53,57 @@ class SVDImporter(RDLImporter):
 
         tree = ElementTree.parse(path)
 
-        component = self.get_component(tree)
+        device = self.get_device(tree)
 
-        memoryMaps = self.get_all_memoryMap(component)
+        # memoryMaps = self.get_all_memoryMap(component)
+        peripherals = self.get_all_peripherals(device)
 
-        for memoryMap in memoryMaps:
-            comp_name = self.get_sanitized_element_name(component)
-            self.import_memoryMap(memoryMap, comp_name, remap_state)
+        for peripheral in peripherals:
+            comp_name = self.get_sanitized_element_name(device)
+            # self.import_memoryMap(memoryMap, comp_name, remap_state)
+            self.import_peripheral(peripheral, comp_name)
+            # import sys
+            # sys.exit(1)
 
 
-    def get_component(self, tree: ElementTree.ElementTree) -> ElementTree.Element:
+    def get_device(self, tree: ElementTree.ElementTree) -> ElementTree.Element:
         # Find <component> and determine namespace prefix
         root = tree.getroot()
-        if get_local_name(root) == "component":
+        if get_local_name(root) == "device":
             component = root
-            namespace = get_namespace(root)
-            for ns_regex in VALID_NS_REGEXES:
-                if ns_regex.match(namespace):
-                    self.ns = namespace
-                    break
-            else:
-                self.msg.fatal("Unrecognized namespace URI: %s" % namespace, self.src_ref)
-        else:
-            self.msg.fatal(
-                "Could not find a 'component' element",
-                self.src_ref
-            )
+        #     for attr in root.attrib:
+        #         print(f"Attr: {str(attr)}")
+        #     namespace = get_namespace(root)
+        #     for ns_regex in VALID_NS_REGEXES:
+        #         if ns_regex.match(namespace):
+        #             self.ns = namespace
+        #             break
+        #     else:
+        #         self.msg.fatal("Unrecognized namespace URI: %s" % namespace, self.src_ref)
+        # else:
+        #     self.msg.fatal(
+        #         "Could not find a 'component' element",
+        #         self.src_ref
+        #     )
         return component
 
 
-    def get_all_memoryMap(self, component: ElementTree.Element) -> List[ElementTree.Element]:
+    def get_all_peripherals(self, component: ElementTree.Element) -> List[ElementTree.Element]:
         # Find <memoryMaps>
-        memoryMaps_s = component.findall(self.ns+"memoryMaps")
-        if len(memoryMaps_s) != 1:
+        peripherals = component.findall("peripherals")
+        if len(peripherals) != 1:
             self.msg.fatal(
-                "'component' must contain exactly one 'memoryMaps' element",
+                "'device' must contain exactly one 'peripherals' element",
                 self.src_ref
             )
-        memoryMaps = memoryMaps_s[0]
+        peripherals = peripherals[0]
 
         # Find all <memoryMap>
-        memoryMap_s = memoryMaps.findall(self.ns+"memoryMap")
+        peripheral_list = peripherals.findall("peripheral")
 
-        return memoryMap_s
+        return peripheral_list
 
-
-    def get_all_address_blocks(self, memoryMap: ElementTree.Element, remap_state: Optional[str]) -> List[ElementTree.Element]:
+    def get_all_registers(self, peripheral: ElementTree.Element) -> List[ElementTree.Element]:
         """
         Gets all the addressBlock elements within a memoryMap
 
@@ -111,20 +111,19 @@ class SVDImporter(RDLImporter):
         These provide alternate views into the address space depending on the state of the device.
         This function also returns any addressBlock elements that match the remap state
         """
-        addressBlocks = memoryMap.findall(self.ns+"addressBlock")
+        registers = peripheral.findall("registers")
+        if len(registers) > 1:
+            self.msg.fatal(
+                "'device' must contain at most one 'registers' element",
+                self.src_ref
+            )
+        elif len(registers) == 0:
+            return None
+        else:
+            return registers[0]
 
-        memoryRemaps = memoryMap.findall(self.ns+"memoryRemap")
-        for memoryRemap in memoryRemaps:
-            this_remapState = memoryRemap.get(self.ns+"state")
-            self.remap_states_seen.add(this_remapState)
-            if this_remapState == remap_state:
-                remap_addressBlocks = memoryRemap.findall(self.ns+"addressBlock")
-                addressBlocks.extend(remap_addressBlocks)
 
-        return addressBlocks
-
-
-    def import_memoryMap(self, memoryMap: ElementTree.Element, component_name: str, remap_state: Optional[str]) -> None:
+    def import_peripheral(self, peripheral: ElementTree.Element, component_name: str) -> None:
         # Schema:
         #     {nameGroup}
         #         name (required) --> inst_name
@@ -138,13 +137,13 @@ class SVDImporter(RDLImporter):
         #     shared
         #     vendorExtensions
 
-        d = self.flatten_element_values(memoryMap)
+        d = self.flatten_element_values(peripheral)
 
 
         # Check for required values
-        name = self.get_sanitized_element_name(memoryMap)
+        name = self.get_sanitized_element_name(peripheral)
         if not name:
-            self.msg.fatal("memoryMap is missing required tag 'name'", self.src_ref)
+            self.msg.fatal("peripheral is missing required tag 'name'", self.src_ref)
 
         # Add component prefix to name
         name = "%s__%s" % (component_name, name)
@@ -162,27 +161,30 @@ class SVDImporter(RDLImporter):
         if 'isPresent' in d:
             self.assign_property(C_def, "ispresent", d['isPresent'])
 
-        aub = memoryMap.find(self.ns+"addressUnitBits")
-        if aub is not None:
-            self._addressUnitBits = self.parse_integer(get_text(aub))
+        # aub = peripheral.find("addressUnitBits")
+        # if aub is not None:
+        #     self._addressUnitBits = self.parse_integer(get_text(aub))
 
-            if (self._addressUnitBits < 8) or (self._addressUnitBits % 8 != 0):
-                self.msg.fatal(
-                    "Importer only supports <addressUnitBits> that is a multiple of 8",
-                    self.src_ref
-                )
-        else:
-            self._addressUnitBits = 8
+        #     if (self._addressUnitBits < 8) or (self._addressUnitBits % 8 != 0):
+        #         self.msg.fatal(
+        #             "Importer only supports <addressUnitBits> that is a multiple of 8",
+        #             self.src_ref
+        #         )
+        # else:
+        #     self._addressUnitBits = 8
+        self._addressUnitBits = 8 # TODO: Get this from the <addressUnitBits> in <device> tag
 
 
         # collect children
         name_prefix = name + "__"
         self.remap_states_seen = set()
-        addressBlocks = self.get_all_address_blocks(memoryMap, remap_state)
-        for addressBlock in addressBlocks:
-            child = self.parse_addressBlock(addressBlock, name_prefix)
-            if child:
-                self.add_child(C_def, child)
+        print(f"Getting registers for peripheral {name}")
+        registers = self.get_all_registers(peripheral)
+        if registers is not None:
+            for register in registers:
+                child = self.parse_register(register)
+                if child:
+                    self.add_child(C_def, child)
 
         if 'vendorExtensions' in d:
             C_def = self.memoryMap_vendorExtensions(d['vendorExtensions'], C_def)
@@ -203,138 +205,139 @@ class SVDImporter(RDLImporter):
                     self.src_ref
                 )
             return
+        else:
+            print(f"Registering root component {name}")
 
         self.register_root_component(C_def)
 
+    # def parse_addressBlock(self, addressBlock: ElementTree.Element, name_prefix:str) -> Optional[Union[comp.Addrmap, comp.Mem]]:
+    #     """
+    #     Parses an addressBlock and returns an instantiated addrmap or mem
+    #     component.
 
-    def parse_addressBlock(self, addressBlock: ElementTree.Element, name_prefix:str) -> Optional[Union[comp.Addrmap, comp.Mem]]:
-        """
-        Parses an addressBlock and returns an instantiated addrmap or mem
-        component.
+    #     If addressBlock is empty or usage specifies 'reserved' then returns
+    #     None
+    #     """
+    #     # Schema:
+    #     #   {nameGroup}
+    #     #       name (required) --> inst_name
+    #     #       displayName --> prop:name
+    #     #       description --> prop:desc
+    #     #   accessHandles
+    #     #   isPresent --> prop:ispresent
+    #     #   baseAddress (required) --> addr_offset
+    #     #   {addressBlockDefinitionGroup}
+    #     #       typeIdentifier
+    #     #       range (required) --> divide by width and set prop:mementries if Mem
+    #     #       width (required) --> prop:memwidth if Mem
+    #     #       {memoryBlockData}
+    #     #           usage --> Mem vs Addrmap instance
+    #     #           volatile
+    #     #           access --> prop:sw if Mem
+    #     #           parameters
+    #     #       {registerData}
+    #     #           register --> children
+    #     #           registerFile --> children
+    #     #   vendorExtensions
 
-        If addressBlock is empty or usage specifies 'reserved' then returns
-        None
-        """
-        # Schema:
-        #   {nameGroup}
-        #       name (required) --> inst_name
-        #       displayName --> prop:name
-        #       description --> prop:desc
-        #   accessHandles
-        #   isPresent --> prop:ispresent
-        #   baseAddress (required) --> addr_offset
-        #   {addressBlockDefinitionGroup}
-        #       typeIdentifier
-        #       range (required) --> divide by width and set prop:mementries if Mem
-        #       width (required) --> prop:memwidth if Mem
-        #       {memoryBlockData}
-        #           usage --> Mem vs Addrmap instance
-        #           volatile
-        #           access --> prop:sw if Mem
-        #           parameters
-        #       {registerData}
-        #           register --> children
-        #           registerFile --> children
-        #   vendorExtensions
+    #     d = self.flatten_element_values(addressBlock)
+    #     name = self.get_sanitized_element_name(addressBlock)
 
-        d = self.flatten_element_values(addressBlock)
-        name = self.get_sanitized_element_name(addressBlock)
+    #     if d.get('usage', None) == "reserved":
+    #         # 1685-2014 6.9.4.2-a.1.iii: defines the entire range of the
+    #         # addressBlock as reserved or for unknown usage to IP-XACT. This
+    #         # type shall not contain registers.
+    #         return None
 
-        if d.get('usage', None) == "reserved":
-            # 1685-2014 6.9.4.2-a.1.iii: defines the entire range of the
-            # addressBlock as reserved or for unknown usage to IP-XACT. This
-            # type shall not contain registers.
-            return None
+    #     # Check for required values
+    #     required = {'baseAddress', 'range', 'width'}
+    #     missing = required - set(d.keys())
+    #     if not name:
+    #         missing.add('name')
+    #     for m in missing:
+    #         self.msg.fatal("addressBlock is missing required tag '%s'" % m, self.src_ref)
 
-        # Check for required values
-        required = {'baseAddress', 'range', 'width'}
-        missing = required - set(d.keys())
-        if not name:
-            missing.add('name')
-        for m in missing:
-            self.msg.fatal("addressBlock is missing required tag '%s'" % m, self.src_ref)
+    #     # Create named component definition
+    #     is_memory = d.get('usage', None) == "memory"
+    #     type_name = name_prefix + name
+    #     if is_memory:
+    #         C_def = self.create_mem_definition(type_name)
+    #     else:
+    #         C_def = self.create_addrmap_definition(type_name)
 
-        # Create named component definition
-        is_memory = d.get('usage', None) == "memory"
-        type_name = name_prefix + name
-        if is_memory:
-            C_def = self.create_mem_definition(type_name)
-        else:
-            C_def = self.create_addrmap_definition(type_name)
+    #     # Collect properties and other values
+    #     if 'displayName' in d:
+    #         self.assign_property(C_def, "name", d['displayName'])
 
-        # Collect properties and other values
-        if 'displayName' in d:
-            self.assign_property(C_def, "name", d['displayName'])
+    #     if 'description' in d:
+    #         self.assign_property(C_def, "desc", d['description'])
 
-        if 'description' in d:
-            self.assign_property(C_def, "desc", d['description'])
+    #     if 'isPresent' in d:
+    #         self.assign_property(C_def, "ispresent", d['isPresent'])
 
-        if 'isPresent' in d:
-            self.assign_property(C_def, "ispresent", d['isPresent'])
+    #     if is_memory:
+    #         self.assign_property(C_def, "memwidth", d['width'])
+    #         self.assign_property(
+    #             C_def, "mementries",
+    #             (d['range'] * self._addressUnitBits) // (d['width'])
+    #         )
 
-        if is_memory:
-            self.assign_property(C_def, "memwidth", d['width'])
-            self.assign_property(
-                C_def, "mementries",
-                (d['range'] * self._addressUnitBits) // (d['width'])
-            )
+    #         if 'access' in d:
+    #             self.assign_property(C_def, "sw", d['access'])
 
-            if 'access' in d:
-                self.assign_property(C_def, "sw", d['access'])
+    #     if 'access' in d:
+    #         self._current_addressBlock_access = d['access']
+    #     else:
+    #         self._current_addressBlock_access = rdltypes.AccessType.rw
 
-        if 'access' in d:
-            self._current_addressBlock_access = d['access']
-        else:
-            self._current_addressBlock_access = rdltypes.AccessType.rw
+    #     # collect children
+    #     for child_el in d['child_els']:
+    #         local_name = get_local_name(child_el)
+    #         if local_name == "register":
+    #             R = self.parse_register(child_el)
+    #             if R:
+    #                 self.add_child(C_def, R)
+    #         elif local_name == "registerFile" and not is_memory:
+    #             R = self.parse_registerFile(child_el)
+    #             if R:
+    #                 self.add_child(C_def, R)
+    #         else:
+    #             self.msg.error(
+    #                 "Invalid child element <%s> found in <%s:addressBlock>"
+    #                 % (child_el.tag, self.ns),
+    #                 self.src_ref
+    #             )
 
-        # collect children
-        for child_el in d['child_els']:
-            local_name = get_local_name(child_el)
-            if local_name == "register":
-                R = self.parse_register(child_el)
-                if R:
-                    self.add_child(C_def, R)
-            elif local_name == "registerFile" and not is_memory:
-                R = self.parse_registerFile(child_el)
-                if R:
-                    self.add_child(C_def, R)
-            else:
-                self.msg.error(
-                    "Invalid child element <%s> found in <%s:addressBlock>"
-                    % (child_el.tag, self.ns),
-                    self.src_ref
-                )
-
-        if 'vendorExtensions' in d:
-            C_def = self.addressBlock_vendorExtensions(d['vendorExtensions'], C_def)
+    #     if 'vendorExtensions' in d:
+    #         C_def = self.addressBlock_vendorExtensions(d['vendorExtensions'], C_def)
 
 
-        if not is_memory and not C_def.children:
-            # If an addressBlock has no children, skip it
-            self.msg.warning(
-                "Discarding addressBlock '%s' because it does not contain any children"
-                % name,
-                self.src_ref
-            )
-            return None
+    #     if not is_memory and not C_def.children:
+    #         # If an addressBlock has no children, skip it
+    #         self.msg.warning(
+    #             "Discarding addressBlock '%s' because it does not contain any children"
+    #             % name,
+    #             self.src_ref
+    #         )
+    #         return None
 
-        # All addressBlocks get registered under the root namespace
-        self.register_root_component(C_def)
+    #     # All addressBlocks get registered under the root namespace
+    #     self.register_root_component(C_def)
 
-        # Also convert to an instance, since this will be instantiated into the
-        # wrapper that represents the memoryMap
-        if is_memory:
-            C = self.instantiate_mem(
-                C_def,
-                name, self.AU_to_bytes(d['baseAddress'])
-            )
-        else:
-            C = self.instantiate_addrmap(
-                C_def,
-                name, self.AU_to_bytes(d['baseAddress'])
-            )
+    #     # Also convert to an instance, since this will be instantiated into the
+    #     # wrapper that represents the memoryMap
+    #     if is_memory:
+    #         C = self.instantiate_mem(
+    #             C_def,
+    #             name, self.AU_to_bytes(d['baseAddress'])
+    #         )
+    #     else:
+    #         C = self.instantiate_addrmap(
+    #             C_def,
+    #             name, self.AU_to_bytes(d['baseAddress'])
+    #         )
 
-        return C
+    #     return C
 
 
     def parse_registerFile(self, registerFile: ElementTree.Element) -> Optional[comp.Regfile]:
@@ -454,6 +457,7 @@ class SVDImporter(RDLImporter):
         #   parameters
         #   vendorExtensions
 
+        print(f"Parsing register tag {register.tag}")
         d = self.flatten_element_values(register)
         name = self.get_sanitized_element_name(register)
 
@@ -508,14 +512,15 @@ class SVDImporter(RDLImporter):
         field_name_collisions = set()
         for child_el in d['child_els']:
             local_name = get_local_name(child_el)
-            if local_name == "field":
-                # This XML element is a field
-                field_name = self.get_sanitized_element_name(child_el)
-                field_tuples.append((field_name, child_el))
-                if field_name in field_names:
-                    field_name_collisions.add(field_name)
-                else:
-                    field_names.add(field_name)
+            if local_name == "fields":
+                for field_el in child_el:
+                    # This XML element is a field
+                    field_name = self.get_sanitized_element_name(field_el)
+                    field_tuples.append((field_name, field_el))
+                    if field_name in field_names:
+                        field_name_collisions.add(field_name)
+                    else:
+                        field_names.add(field_name)
             else:
                 self.msg.error(
                     "Invalid child element <%s> found in <%s:register>"
@@ -535,10 +540,6 @@ class SVDImporter(RDLImporter):
             )
             if field is not None:
                 self.add_child(C, field)
-
-
-        if 'vendorExtensions' in d:
-            C = self.register_vendorExtensions(d['vendorExtensions'], C)
 
         if not C.children:
             # Register contains no fields! RDL does not allow this. Discard
@@ -598,6 +599,8 @@ class SVDImporter(RDLImporter):
         if not name:
             missing.add('name')
         for m in missing:
+            print(f"Name: {name}  Tag: {str(d)}")
+            print(f"Name: {name}  Element: {ElementTree.tostring(field)}")
             self.msg.fatal("field is missing required tag '%s'" % m, self.src_ref)
 
         # Discard field if it is reserved
@@ -749,7 +752,7 @@ class SVDImporter(RDLImporter):
 
         Returns None if not found
         """
-        name_el = el.find(self.ns+"name")
+        name_el = el.find("name")
 
         if name_el is None:
             return None
@@ -794,7 +797,7 @@ class SVDImporter(RDLImporter):
                 # Parse boolean types
                 d[local_name] = self.parse_boolean(get_text(child))
 
-            elif local_name in ("register", "registerFile", "field"):
+            elif local_name in ("register", "registerFile", "fields"):
                 # Child elements that need to be parsed elsewhere
                 d['child_els'].append(child)
 
@@ -978,5 +981,6 @@ def get_namespace(el: ElementTree.Element) -> str:
     return el.tag.split("}")[0] + "}"
 
 def get_local_name(el: ElementTree.Element) -> str:
+    # print(f"Getting local name for element {el.tag}")
     # Returns the non-namespace part of this element's tag
-    return el.tag.split("}")[1]
+    return el.tag

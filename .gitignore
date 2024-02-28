@@ -1,0 +1,6 @@
+html_dir/
+Lib/
+Scripts/
+Include/
+pyvenv.cfg
+__pycache__/

@@ -392,10 +392,9 @@ class SVDImporter(RDLImporter):
 
         self.assign_property(C, "regwidth", d['size'])
 
-
         reg_access = d.get('access', self._current_addressBlock_access)
-        reg_reset_value = d.get('reset.value', None)
-        reg_reset_mask = d.get('reset.mask', None)
+        reg_reset_value = d.get('resetValue', None)
+        reg_reset_mask = d.get('resetMask', None)
 
         # Collect field elements and scan for name collisions
         field_tuples = []
@@ -677,7 +676,7 @@ class SVDImporter(RDLImporter):
                 # Copy description string types unmodified
                 d[local_name] = get_text(child)
 
-            elif local_name in ("baseAddress", "addressOffset", "range", "width", "size", "bitOffset", "bitWidth"):
+            elif local_name in ("baseAddress", "addressOffset", "range", "width", "size", "bitOffset", "bitWidth", "resetValue", "resetMask"):
                 # Parse integer types
                 d[local_name] = self.parse_integer(get_text(child))
 
@@ -700,11 +699,11 @@ class SVDImporter(RDLImporter):
 
                 value_el = reset.find(self.ns + "value")
                 if value_el is not None:
-                    d['reset.value'] = self.parse_integer(get_text(value_el))
+                    d['resetValue'] = self.parse_integer(get_text(value_el))
 
                 mask_el = reset.find(self.ns + "mask")
                 if mask_el is not None:
-                    d['reset.mask'] = self.parse_integer(get_text(mask_el))
+                    d['resetMask'] = self.parse_integer(get_text(mask_el))
 
             elif local_name == "access":
                 s = get_text(child).strip()

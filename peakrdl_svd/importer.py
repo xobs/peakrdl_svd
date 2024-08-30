@@ -205,13 +205,13 @@ class SVDImporter(RDLImporter):
         def process_registers(registers):
             seen_addresses = {}
             for register in registers:
-                child = self.parse_register(register)
-                if child:
-                    if child.addr_offset in seen_addresses:
-                        self.msg.warning(f"Register {child.inst_name} at address 0x{hex(child.addr_offset)} overlaps with {seen_addresses[child.addr_offset]}", self.src_ref)
-                    else:
-                        self.add_child(C_def, child)
-                        seen_addresses[child.addr_offset] = child.inst_name
+                for child in self.parse_register(register):
+                    if child is not None:
+                        if child.addr_offset in seen_addresses:
+                            self.msg.warning(f"Register {child.inst_name} at address 0x{hex(child.addr_offset)} overlaps with {seen_addresses[child.addr_offset]}", self.src_ref)
+                        else:
+                            self.add_child(C_def, child)
+                            seen_addresses[child.addr_offset] = child.inst_name
 
         # collect children
         if base_name is not None and base_name in self.base_registers:
@@ -273,8 +273,7 @@ class SVDImporter(RDLImporter):
             # is array
             C = self.instantiate_regfile(
                 self.create_regfile_definition(),
-                name, self.AU_to_bytes(d['addressOffset']),
-                d['dim'], self.AU_to_bytes(d['range'])
+                name, self.AU_to_bytes(d['addressOffset'])
             )
         else:
             C = self.instantiate_regfile(
@@ -322,7 +321,7 @@ class SVDImporter(RDLImporter):
         return C
 
 
-    def parse_register(self, register: ElementTree.Element) -> Optional[comp.Reg]:
+    def parse_register(self, register: ElementTree.Element) -> List[Optional[comp.Reg]]:
         """
         Parses a register and returns an instantiated reg component
         """
@@ -367,25 +366,43 @@ class SVDImporter(RDLImporter):
         d['size'] = roundup_pow2(d['size'])
 
         # Create component instance
+        result = []
         if 'dim' in d:
-            # is array
-            C = self.instantiate_reg(
-                self.create_reg_definition(),
-                name, self.AU_to_bytes(d['addressOffset']),
-                d['dim'], d['size'] // 8
-            )
+            dimIncrement = 1
+            dimIndex = 0
+            if 'dimIncrement' in d:
+                dimIncrement = d['dimIncrement']
+            if "dimIndex" in d:
+                dimIndex = d['dimIndex'][0]
+            for index in range(0, d['dim'], dimIncrement):
+                name_index = index // dimIncrement + dimIndex
+                # If the name contains "%s", replace it with the index.
+                # Otherwise, append the index to the name
+                if "%s" in name:
+                    register_name = name.replace("%s", str(name_index))
+                else:
+                    register_name = f"{name}_{name_index}"
+                register_offset = d['addressOffset'] + index
+
+                result.append(self.parse_one_register(d, self.instantiate_reg(
+                    self.create_reg_definition(),
+                    register_name, register_offset
+                ), index, name_index))
         else:
-            C = self.instantiate_reg(
+            result.append(self.parse_one_register(d, self.instantiate_reg(
                 self.create_reg_definition(),
                 name, self.AU_to_bytes(d['addressOffset'])
-            )
+            ), 0, 0))
+        return result
+
+    def parse_one_register(self, d: Dict[str, Any], C: comp.Reg, index: int, name_index: int) -> Optional[comp.Reg]:
 
         # Collect properties and other values
         if 'displayName' in d:
-            self.assign_property(C, "name", d['displayName'])
+            self.assign_property(C, "name", d['displayName'].replace("%s", str(name_index)))
 
         if 'description' in d:
-            self.assign_property(C, "desc", d['description'])
+            self.assign_property(C, "desc", d['description'].replace("%s", str(name_index)))
 
         if 'isPresent' in d:
             self.assign_property(C, "ispresent", d['isPresent'])
@@ -423,22 +440,22 @@ class SVDImporter(RDLImporter):
             # Uniquify field name if necessary
             uniquify_field_name = field_name in field_name_collisions
 
-            field = self.parse_field(
+            for field in self.parse_field(
                 field_name, field_el,
                 reg_access, reg_reset_value, reg_reset_mask,
                 uniquify_field_name
-            )
-            if field is not None:
-                self.add_child(C, field)
+            ):
+                if field is not None:
+                    self.add_child(C, field)
 
         if not C.children:
             # Register contains no fields! RDL does not allow this. Discard
-            self.msg.warning(
-                "Discarding register '%s' because it does not contain any fields"
-                % (C.inst_name),
-                self.src_ref
-            )
-            return None
+            # self.msg.warning(
+            #     f"Creating fake field in register '{C.inst_name}' because it does not contain any fields",
+            #     self.src_ref
+            # )
+            self.add_child(C, self.instantiate_field(self.create_field_definition(), C.inst_name, 0, d['size']))
+            # None
 
         return C
 
@@ -448,7 +465,7 @@ class SVDImporter(RDLImporter):
         name: str, field: ElementTree.Element,
         reg_access: rdltypes.AccessType, reg_reset_value: Optional[int], reg_reset_mask: Optional[int],
         uniquify_field_name: bool,
-    ) -> Optional[comp.Field]:
+    ) -> list[Optional[comp.Field]]:
         """
         Parses an field and returns an instantiated field component
         """
@@ -483,6 +500,31 @@ class SVDImporter(RDLImporter):
 
         d = self.flatten_element_values(field)
 
+        if 'dim' in d:
+            results = []
+            dimIncrement = 1
+            dimIndex = 0
+            if 'dimIncrement' in d:
+                dimIncrement = d['dimIncrement']
+            if "dimIndex" in d:
+                dimIndex = d['dimIndex'][0]
+            for index in range(0, d['dim'], dimIncrement):
+                name_index = index // dimIncrement + dimIndex
+                results.append(self.parse_one_field(name, field, reg_access, reg_reset_value, reg_reset_mask, uniquify_field_name, index, name_index))
+            return results
+        else:
+            return [self.parse_one_field(name, field, reg_access, reg_reset_value, reg_reset_mask, uniquify_field_name, 0, 0)]
+
+    def parse_one_field(
+        self,
+        name: str, field: ElementTree.Element,
+        reg_access: rdltypes.AccessType, reg_reset_value: Optional[int], reg_reset_mask: Optional[int],
+        uniquify_field_name: bool,
+        index: int,
+        name_index: int,
+    ) -> Optional[comp.Field]:
+        d = self.flatten_element_values(field)
+
         # Check for required values
         required = {'bitOffset', 'bitWidth'}
         missing = required - set(d.keys())
@@ -497,8 +539,12 @@ class SVDImporter(RDLImporter):
         if d.get('reserved', False):
             return None
 
+        d['bitOffset'] += index * d['bitWidth']
+
         if uniquify_field_name:
             name += "_%d_%d" % (d['bitOffset'] + d['bitWidth'] - 1, d['bitOffset'])
+
+        name = name.replace("%s", str(name_index))
 
         # Create component instance
         C = self.instantiate_field(
@@ -508,10 +554,10 @@ class SVDImporter(RDLImporter):
 
         # Collect properties and other values
         if 'displayName' in d:
-            self.assign_property(C, "name", d['displayName'])
+            self.assign_property(C, "name", d['displayName'].replace("%s", str(name_index)))
 
         if 'description' in d:
-            self.assign_property(C, "desc", d['description'])
+            self.assign_property(C, "desc", d['description'].replace("%s", str(name_index)))
 
         if 'isPresent' in d:
             self.assign_property(C, "ispresent", d['isPresent'])
@@ -630,6 +676,15 @@ class SVDImporter(RDLImporter):
         else:
             raise ValueError("Unable to parse boolean value '%s'" % s)
 
+    def parse_range(self, s: str) -> tuple[int, int]:
+        """
+        Converts a range of two values to a tuple.
+        """
+        if "-" not in s:
+            raise ValueError("Invalid range format '%s'" % s)
+        parts = s.split("-")
+        return (int(parts[0]), int(parts[1]))
+
 
     def get_sanitized_element_name(self, el: ElementTree.Element) -> Optional[str]:
         """
@@ -645,7 +700,7 @@ class SVDImporter(RDLImporter):
             return None
 
         return re.sub(
-            r'[:\-.]',
+            r'[:\-\[\].]',
             "_",
             get_text(name_el).strip()
         )
@@ -676,7 +731,10 @@ class SVDImporter(RDLImporter):
                 # Copy description string types unmodified
                 d[local_name] = get_text(child)
 
-            elif local_name in ("baseAddress", "addressOffset", "range", "width", "size", "bitOffset", "bitWidth", "resetValue", "resetMask"):
+            elif local_name == "dimIndex":
+                d[local_name] = self.parse_range(get_text(child))
+
+            elif local_name in ("baseAddress", "addressOffset", "range", "width", "size", "bitOffset", "bitWidth", "resetValue", "resetMask", "dim", "dimIncrement"):
                 # Parse integer types
                 d[local_name] = self.parse_integer(get_text(child))
 
@@ -720,9 +778,19 @@ class SVDImporter(RDLImporter):
                 # Accumulate array dimensions
                 dim = self.parse_integer(get_text(child))
                 if 'dim' in d:
-                    d['dim'].append(dim)
+                    self.msg.error(f"Multiple dimensions found in {child.tag}", self.src_ref)
+                    d['dim'] = dim
                 else:
-                    d['dim'] = [dim]
+                    d['dim'] = dim
+
+            elif local_name == "dimIncrement":
+                # Accumulate array dimensions
+                dimIncrement = self.parse_integer(get_text(child))
+                if 'dimIncrement' in d:
+                    self.msg.error(f"Multiple dimension increments found in {child.tag}", self.src_ref)
+                    d['dimIncrement'] = dimIncrement
+                else:
+                    d['dimIncrement'] = dimIncrement
 
             elif local_name == "readAction":
                 s = get_text(child).strip()

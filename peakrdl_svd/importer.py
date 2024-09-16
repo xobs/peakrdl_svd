@@ -374,7 +374,7 @@ class SVDImporter(RDLImporter):
                 dimIncrement = d['dimIncrement']
             if "dimIndex" in d:
                 dimIndex = d['dimIndex'][0]
-            for index in range(0, d['dim'], dimIncrement):
+            for index in range(0, d['dim'] * dimIncrement, dimIncrement):
                 name_index = index // dimIncrement + dimIndex
                 # If the name contains "%s", replace it with the index.
                 # Otherwise, append the index to the name
@@ -508,7 +508,7 @@ class SVDImporter(RDLImporter):
                 dimIncrement = d['dimIncrement']
             if "dimIndex" in d:
                 dimIndex = d['dimIndex'][0]
-            for index in range(0, d['dim'], dimIncrement):
+            for index in range(0, d['dim'] * dimIncrement, dimIncrement):
                 name_index = index // dimIncrement + dimIndex
                 results.append(self.parse_one_field(name, field, reg_access, reg_reset_value, reg_reset_mask, uniquify_field_name, index, name_index))
             return results

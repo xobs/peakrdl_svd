@@ -53,12 +53,14 @@ READ_ACTION_MAP = [
     (rdltypes.OnReadType.rclr, "clear"),
     (rdltypes.OnReadType.rset, "set"),
     (rdltypes.OnReadType.ruser, "modify"),
+    (rdltypes.OnReadType.ruser, "modifyExternal"),
 ]
 
 def readaction_from_onread(onread: rdltypes.OnReadType) -> str:
     for onread_entry, read_action_entry in READ_ACTION_MAP:
         if onread == onread_entry:
             return read_action_entry
+    print(f"Entry {onread} not found")
     return None
 
 def onread_from_readaction(readaction: str) -> rdltypes.OnReadType:

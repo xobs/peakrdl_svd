@@ -1,6 +1,7 @@
+bin/
 html_dir/
-Lib/
-Scripts/
-Include/
-pyvenv.cfg
-__pycache__/
+.jj
+lib/
+include/
+*.egg-info
+*.svd
